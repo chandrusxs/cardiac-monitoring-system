@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cardiac Monitoring — AI Doctor Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
+    rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+
+  <!-- ═══════════════════ HEADER ═══════════════════ -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">
+        <div class="logo-icon">❤️</div>
+        <div>
+          <div class="logo-title">CardioWatch AI</div>
+          <div class="logo-sub">IoT Cardiac Monitoring System</div>
+        </div>
+      </div>
+    </div>
+    <div class="header-center">
+      <div class="live-badge">
+        <span class="pulse-dot"></span>
+        <span id="liveStatus">LIVE MONITORING</span>
+      </div>
+      <div class="last-update">Last updated: <span id="lastUpdate">--:--:--</span></div>
+    </div>
+    <div class="header-right">
+      <button class="btn-outline" onclick="openSettings()">⚙ Settings</button>
+      <button class="btn-primary" onclick="generateReport()">🤖 AI Report</button>
+    </div>
+  </header>
+
+  <!-- ═══════════════════ MAIN LAYOUT ═══════════════════ -->
+  <div class="layout">
+
+    <!-- ── SIDEBAR ── -->
+    <aside class="sidebar">
+      <div class="patient-card">
+        <div class="patient-avatar">👤</div>
+        <div class="patient-info">
+          <div class="patient-name" id="patientName">Patient</div>
+          <div class="patient-id" id="patientId">ID: —</div>
+          <div class="patient-diag" id="patientDiag">Post-Cardiac Recovery</div>
+        </div>
+      </div>
+
+      <div class="sidebar-section">Normal Ranges</div>
+      <div class="range-item">
+        <span class="range-label">❤️ Heart Rate</span>
+        <span class="range-val">60 – 100 BPM</span>
+      </div>
+      <div class="range-item">
+        <span class="range-label">🫁 SpO₂</span>
+        <span class="range-val">≥ 95 %</span>
+      </div>
+      <div class="range-item">
+        <span class="range-label">🌡 Temperature</span>
+        <span class="range-val">36.1 – 37.2 °C</span>
+      </div>
+
+      <div class="sidebar-section">Quick Stats</div>
+      <div class="quick-stat"><span>Readings Today</span><span id="readingsToday">—</span></div>
+      <div class="quick-stat"><span>Alerts Today</span><span id="alertsToday" class="alert-count">—</span></div>
+      <div class="quick-stat"><span>Recovery Score</span><span id="sidebarScore" class="score-badge">—</span></div>
+
+      <div class="sidebar-section">Monitoring Period</div>
+      <div class="quick-stat"><span>Data Points</span><span id="totalPoints">—</span></div>
+      <div class="quick-stat"><span>Channel ID</span><span id="sidebarChannel">Demo</span></div>
+    </aside>
+
+    <!-- ── MAIN CONTENT ── -->
+    <main class="content">
+
+      <!-- STAT CARDS -->
+      <div class="stat-grid">
+        <div class="stat-card hr-card" id="hrCard">
+          <div class="stat-icon">❤️</div>
+          <div class="stat-body">
+            <div class="stat-label">Heart Rate</div>
+            <div class="stat-value"><span id="hrValue">--</span><span class="stat-unit">BPM</span></div>
+            <div class="stat-status" id="hrStatus">—</div>
+          </div>
+          <div class="stat-trend" id="hrTrend">→</div>
+        </div>
+
+        <div class="stat-card spo2-card" id="spo2Card">
+          <div class="stat-icon">🫁</div>
+          <div class="stat-body">
+            <div class="stat-label">SpO₂ Saturation</div>
+            <div class="stat-value"><span id="spo2Value">--</span><span class="stat-unit">%</span></div>
+            <div class="stat-status" id="spo2Status">—</div>
+          </div>
+          <div class="stat-trend" id="spo2Trend">→</div>
+        </div>
+
+        <div class="stat-card temp-card" id="tempCard">
+          <div class="stat-icon">🌡</div>
+          <div class="stat-body">
+            <div class="stat-label">Body Temperature</div>
+            <div class="stat-value"><span id="tempValue">--</span><span class="stat-unit">°C</span></div>
+            <div class="stat-status" id="tempStatus">—</div>
+          </div>
+          <div class="stat-trend" id="tempTrend">→</div>
+        </div>
+
+        <div class="stat-card score-card" id="scoreCard">
+          <div class="stat-icon">🤖</div>
+          <div class="stat-body">
+            <div class="stat-label">AI Recovery Score</div>
+            <div class="stat-value"><span id="scoreValue">--</span><span class="stat-unit">/100</span></div>
+            <div class="stat-status" id="scoreStatus">—</div>
+          </div>
+          <div class="score-ring-wrap">
+            <svg viewBox="0 0 60 60" class="score-ring">
+              <circle cx="30" cy="30" r="24" fill="none" stroke="#ffffff18" stroke-width="5" />
+              <circle cx="30" cy="30" r="24" fill="none" stroke="#00e5ff" stroke-width="5" stroke-linecap="round"
+                stroke-dasharray="150.8" stroke-dashoffset="150.8" id="scoreRingPath" transform="rotate(-90 30 30)" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- CHARTS -->
+      <div class="charts-grid">
+        <div class="chart-card">
+          <div class="chart-header">
+            <div class="chart-title">❤️ Heart Rate <span class="chart-unit">(BPM)</span></div>
+            <div class="chart-meta" id="hrMeta">—</div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="hrChart"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card">
+          <div class="chart-header">
+            <div class="chart-title">🫁 SpO₂ <span class="chart-unit">(%)</span></div>
+            <div class="chart-meta" id="spo2Meta">—</div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="spo2Chart"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-card chart-full">
+          <div class="chart-header">
+            <div class="chart-title">🌡 Body Temperature <span class="chart-unit">(°C)</span></div>
+            <div class="chart-meta" id="tempMeta">—</div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="tempChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- ALERT LOG -->
+      <div class="alert-section">
+        <div class="section-header">
+          <div class="section-title">⚠️ Alert Log</div>
+          <button class="btn-clear" onclick="clearAlerts()">Clear</button>
+        </div>
+        <div class="alert-list" id="alertList">
+          <div class="no-alerts">No alerts — All vitals within normal range ✅</div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ═══════════════════ AI REPORT MODAL ═══════════════════ -->
+  <div class="modal-overlay" id="reportModal" onclick="closeModal('reportModal')">
+    <div class="modal report-modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title">🤖 AI-Generated Clinical Report</div>
+        <div class="modal-actions">
+          <button class="btn-primary" onclick="printReport()">🖨 Print / Save PDF</button>
+          <button class="btn-outline" onclick="closeModal('reportModal')">✕ Close</button>
+        </div>
+      </div>
+      <div class="report-body" id="reportBody">
+        <!-- AI-generated content injected here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════ SETTINGS MODAL ═══════════════════ -->
+  <div class="modal-overlay" id="settingsModal" onclick="closeModal('settingsModal')">
+    <div class="modal settings-modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title">⚙ Settings</div>
+        <button class="btn-outline" onclick="closeModal('settingsModal')">✕</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-section">ThingSpeak Configuration</div>
+        <label class="settings-label">Channel ID</label>
+        <input class="settings-input" id="cfgChannel" placeholder="e.g. 2345678" />
+        <label class="settings-label">Read API Key</label>
+        <input class="settings-input" id="cfgApiKey" placeholder="e.g. ABCDEFGH12345678" />
+        <label class="settings-label">Field Mapping</label>
+        <div class="field-row">
+          <span>Heart Rate →</span>
+          <select class="settings-select" id="cfgHrField">
+            <option value="field1">Field 1</option>
+            <option value="field2">Field 2</option>
+            <option value="field3">Field 3</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <span>SpO₂ →</span>
+          <select class="settings-select" id="cfgSpo2Field">
+            <option value="field2">Field 2</option>
+            <option value="field1">Field 1</option>
+            <option value="field3">Field 3</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <span>Temperature →</span>
+          <select class="settings-select" id="cfgTempField">
+            <option value="field3">Field 3</option>
+            <option value="field1">Field 1</option>
+            <option value="field2">Field 2</option>
+          </select>
+        </div>
+
+        <div class="settings-section">Patient Profile</div>
+        <label class="settings-label">Patient Name</label>
+        <input class="settings-input" id="cfgName" placeholder="e.g. Ravi Kumar" />
+        <label class="settings-label">Patient ID</label>
+        <input class="settings-input" id="cfgId" placeholder="e.g. PT-2024-001" />
+        <label class="settings-label">Diagnosis</label>
+        <input class="settings-input" id="cfgDiag" placeholder="e.g. Post-CABG Recovery" />
+
+        <div class="settings-section">Data Source</div>
+        <div class="toggle-row">
+          <span>Use Demo Mode (no network needed)</span>
+          <label class="toggle"><input type="checkbox" id="cfgDemo" checked /><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span>Refresh Interval</span>
+          <select class="settings-select" id="cfgRefresh">
+            <option value="15000">15 seconds</option>
+            <option value="30000">30 seconds</option>
+            <option value="60000">1 minute</option>
+          </select>
+        </div>
+
+        <button class="btn-primary btn-full" onclick="saveSettings()">💾 Save & Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════ PRINT STYLES (embedded) ═══════════════════ -->
+  <style id="printStyle">
+    @media print {
+      body>*:not(#reportModal) {
+        display: none !important;
+      }
+
+      #reportModal {
+        display: block !important;
+        position: static !important;
+        background: white !important;
+      }
+
+      .modal-overlay {
+        position: static !important;
+        background: none !important;
+      }
+
+      .modal {
+        box-shadow: none !important;
+        border: none !important;
+        background: white !important;
+        color: black !important;
+        max-width: 100% !important;
+        max-height: none !important;
+      }
+
+      .modal-header .modal-actions {
+        display: none !important;
+      }
+
+      .report-body {
+        color: black !important;
+      }
+
+      .rpt-section {
+        border: 1px solid #ccc !important;
+        background: #f9f9f9 !important;
+      }
+
+      .rpt-score-box {
+        background: #eee !important;
+        color: #222 !important;
+      }
+
+      .rpt-param {
+        background: #f0f0f0 !important;
+      }
+    }
+  </style>
+
+  <script src="script.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: cardiac-monitor
+    runtime: node
+    plan: free
+    buildCommand: npm run render-build
+    startCommand: npm start
+    healthCheckPath: /api/ping
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "4000"
+      - key: SENSOR_API_KEY
+        sync: false
+      - key: THINGSPEAK_CHANNEL_ID
+        sync: false
+      - key: THINGSPEAK_READ_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+      - key: DOCTOR_PHONE
+        sync: false
+      - key: CARETAKER_PHONE
+        sync: false
