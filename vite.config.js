@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { httpServer } from './server/index.js'
+import { httpServer, startBackgroundMonitor, startPrecisionTimer } from './server/index.js'
 
 let apiServer
 
@@ -23,6 +23,9 @@ export default defineConfig({
           try {
             apiServer = httpServer.listen(4000, () => {
               console.log('ThingSpeak proxy API running on http://localhost:4000')
+              // Manually start background tasks in dev mode
+              startBackgroundMonitor();
+              startPrecisionTimer();
             });
           } catch (e) {
             console.log('API server start failed, port likely in use:', e.message);

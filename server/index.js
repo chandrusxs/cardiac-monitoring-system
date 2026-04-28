@@ -173,6 +173,8 @@ const setupWebSocket = (server) => {
   console.log("[WS] WebSocket server ready on /api/ws");
 };
 
+// Removed top-level setupWebSocket call to prevent auto-start during build
+
 // ─── Temperature Conversion (same as frontend) ──────────────────────
 const convertTemp = (value) => {
   const parsed = Number(value);
@@ -253,6 +255,8 @@ const startPrecisionTimer = () => {
 
   console.log("[TIMER] Precision timer started (1s interval).");
 };
+
+export { startBackgroundMonitor, startPrecisionTimer };
 
 // ─── Express Routes ──────────────────────────────────────────────────
 
@@ -748,9 +752,7 @@ const startBackgroundMonitor = () => {
   }, 1000); // Poll ThingSpeak every 1 second for fast alert detection
 };
 
-// Start both the background monitor and the precision timer
-startBackgroundMonitor();
-startPrecisionTimer();
+// Removed top-level background monitor calls to prevent auto-start during build
 
 // ─── Data Feeds (HTTP fallback for when WebSocket is not available) ──
 app.get("/api/feeds", async (req, res) => {
@@ -952,9 +954,13 @@ app.get("/api/call-status", (_req, res) => {
 // ─── Server Startup ──────────────────────────────────────────────────
 // Create HTTP server that both Express and WebSocket share
 const httpServer = http.createServer(app);
-setupWebSocket(httpServer);
 
 if (isDirectExecution) {
+  // Start background tasks only when running as the main entry point
+  setupWebSocket(httpServer);
+  startBackgroundMonitor();
+  startPrecisionTimer();
+
   // In production: serve the built frontend from dist/
   const distPath = path.join(__dirname, "..", "dist");
   if (fs.existsSync(distPath)) {
@@ -971,6 +977,10 @@ if (isDirectExecution) {
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Cardiac Monitor running on http://0.0.0.0:${PORT}`);
   });
+} else if (process.env.NODE_ENV === 'development') {
+  // For Vite local development, we still need to setup WebSocket
+  // but background tasks will be started by vite.config.js if needed
+  setupWebSocket(httpServer);
 }
 
 // Export both the Express app and the HTTP server for vite.config.js
