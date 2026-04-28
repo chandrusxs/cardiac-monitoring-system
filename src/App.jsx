@@ -423,7 +423,7 @@ const TrendCard = ({ title, subTitle, options, series, type = "area", height = 2
   </article>
 );
 
-const AlertPopup = ({ alerts, onAcknowledge, onSnooze }) => (
+const AlertPopup = ({ alerts, onSnooze }) => (
   <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
     <div className="w-full max-w-3xl rounded-3xl border border-rose-300 bg-white shadow-2xl overflow-hidden">
       <div className="bg-rose-600 px-6 py-5 text-white">
@@ -441,12 +441,6 @@ const AlertPopup = ({ alerts, onAcknowledge, onSnooze }) => (
       </div>
 
       <div className="flex flex-wrap items-center justify-end gap-2 px-6 pb-6 pt-1">
-        <button
-          className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700"
-          onClick={onAcknowledge}
-        >
-          Acknowledge 15 sec
-        </button>
         <button className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white" onClick={onSnooze}>
           Snooze 2 min
         </button>
@@ -473,8 +467,12 @@ const App = () => {
 
   useEffect(() => {
     feedsRef.current = feeds;
-    if (feeds.length === 0) setDisplayFeeds([]);
-  }, [feeds]);
+    if (feeds.length === 0) {
+      setDisplayFeeds([]);
+    } else if (dataSource === "direct") {
+      setDisplayFeeds([...feeds]);
+    }
+  }, [feeds, dataSource]);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -504,6 +502,7 @@ const App = () => {
   const [apiError, setApiError] = useState("");
   const [popupMutedUntilMs, setPopupMutedUntilMs] = useState(0);
   const [isServerSnoozed, setIsServerSnoozed] = useState(false);
+  const [isDeviceOffline, setIsDeviceOffline] = useState(false);
 
   const updateMuteTimer = (untilMs) => {
     setPopupMutedUntilMs(untilMs);
@@ -512,7 +511,25 @@ const App = () => {
   const [lastAlertSignature, setLastAlertSignature] = useState("");
   const [patientName, setPatientName] = useState("");
   const [patientDetails, setPatientDetails] = useState("");
+
+  // Continuously sync patient info to backend so Twilio knows exactly who is being monitored
+  useEffect(() => {
+    if (!isConnected || useDirectMode) return;
+    
+    const timer = setTimeout(() => {
+      fetch(`${API_BASE}/api/patient`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ patientName, patientDetails })
+      }).catch(e => console.warn("Failed to sync patient info:", e));
+    }, 1000);
+    
+    return () => clearTimeout(timer);
+  }, [patientName, patientDetails, isConnected, useDirectMode]);
+
   const [showReportModal, setShowReportModal] = useState(false);
+  const [aiReport, setAiReport] = useState("");
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [sosStatus, setSosStatus] = useState("idle");
   const [lastAutoSosTime, setLastAutoSosTime] = useState(0);
   const [isAlertSystemEnabled, setIsAlertSystemEnabled] = useState(() => {
@@ -557,29 +574,41 @@ const App = () => {
               case "INIT_STATE":
                 setIsServerSnoozed(data.isServerSnoozed || false);
                 if (data.muteUntil) setPopupMutedUntilMs(data.muteUntil);
-                if (data.isAlertSystemEnabled !== undefined) setIsAlertSystemEnabled(data.isAlertSystemEnabled);
+                if (data.isAlertSystemEnabled !== undefined && Date.now() - lastToggleTime.current > 2000) setIsAlertSystemEnabled(data.isAlertSystemEnabled);
+                if (data.isDeviceOffline !== undefined) setIsDeviceOffline(data.isDeviceOffline);
                 setCriticalStartTime(data.criticalStartTime);
                 setCriticalElapsedMs(data.criticalElapsedMs || 0);
                 setHasPersistedCritical(data.hasPersistedCritical || false);
                 setCallStatus(data.callStatus || "idle");
+                
+                // Authoritative monitoring state from server
+                if (data.isMonitoring !== undefined) {
+                  setIsConnected(data.isMonitoring);
+                  if (data.isMonitoring) {
+                    setConnectionStatus(data.isDeviceOffline ? "DEVICE OFFLINE" : "Connected (Real-time)");
+                    if (data.patientName) setPatientName(data.patientName);
+                    if (data.patientDetails) setPatientDetails(data.patientDetails);
+                  }
+                }
                 break;
 
               case "FEED_UPDATE":
                 setFeeds(data.feeds || []);
                 if (data.source) setDataSource(data.source);
                 if (data.channelId) setActiveChannelId(data.channelId);
-                if (data.isAlertSystemEnabled !== undefined) setIsAlertSystemEnabled(data.isAlertSystemEnabled);
+                if (data.isAlertSystemEnabled !== undefined && Date.now() - lastToggleTime.current > 2000) setIsAlertSystemEnabled(data.isAlertSystemEnabled);
                 if (data.isServerSnoozed !== undefined) setIsServerSnoozed(data.isServerSnoozed);
                 if (data.muteUntil !== undefined) setPopupMutedUntilMs(data.muteUntil);
+                if (data.isDeviceOffline !== undefined) setIsDeviceOffline(data.isDeviceOffline);
                 setError("");
                 setApiError("");
-                if (isConnected) {
-                  setConnectionStatus(
+                setIsConnected(true);
+                setConnectionStatus(
+                  data.isDeviceOffline ? "DEVICE OFFLINE (Check Power/WiFi)" :
                     data.source === "direct"
                       ? "Connected (Direct Sensor — Live)"
                       : "Connected (Real-time)"
-                  );
-                }
+                );
                 break;
 
               case "ALERT_STATE":
@@ -589,7 +618,12 @@ const App = () => {
                 setHasPersistedCritical(data.hasPersistedCritical || false);
                 setIsServerSnoozed(data.isServerSnoozed || false);
                 if (data.muteUntil !== undefined) setPopupMutedUntilMs(data.muteUntil);
-                if (data.isAlertSystemEnabled !== undefined) setIsAlertSystemEnabled(data.isAlertSystemEnabled);
+                if (data.isAlertSystemEnabled !== undefined && Date.now() - lastToggleTime.current > 2000) setIsAlertSystemEnabled(data.isAlertSystemEnabled);
+                if (data.isDeviceOffline !== undefined) {
+                  setIsDeviceOffline(data.isDeviceOffline);
+                  if (data.isDeviceOffline) setConnectionStatus("DEVICE OFFLINE (Check Power/WiFi)");
+                  else if (isConnected) setConnectionStatus(dataSource === "direct" ? "Connected (Direct Sensor — Live)" : "Connected (Real-time)");
+                }
                 setCallStatus(data.callStatus || "idle");
                 break;
 
@@ -660,7 +694,9 @@ const App = () => {
     };
   }, [useDirectMode]); // Only reconnect if mode changes
 
+  const lastToggleTime = useRef(0);
   const toggleAlertSystem = async () => {
+    lastToggleTime.current = Date.now();
     const nextState = !isAlertSystemEnabled;
     setIsAlertSystemEnabled(nextState);
     localStorage.setItem(STORAGE_KEYS.isAlertSystemEnabled, String(nextState));
@@ -858,6 +894,7 @@ const App = () => {
             isMonitoring: true,
             isAlertSystemEnabled,
             patientName: patientName.trim(),
+            patientDetails: patientDetails.trim(),
           }),
         });
 
@@ -1028,14 +1065,21 @@ const App = () => {
   };
 
   const handleStopMonitoring = async () => {
+    setConnectionStatus("Stopping...");
     try {
-      const res = await fetch(`${API_BASE}/api/stop`, { method: "POST" });
-      if (res.ok) {
-        setIsConnected(false);
-        setConnectionStatus("Alerts Stopped");
-      }
+      // Try to tell the server to stop
+      await fetch(`${API_BASE}/api/stop`, { method: "POST" });
     } catch (e) {
-      console.error("Failed to stop monitoring:", e);
+      console.warn("Server stop call failed, stopping locally:", e);
+    } finally {
+      // ALWAYS stop locally regardless of server response
+      setIsConnected(false);
+      setHasPersistedCritical(false);
+      setCriticalElapsedMs(0);
+      setConnectionStatus("Monitoring Stopped");
+      setApiError("");
+      setPatientName("");
+      setPatientDetails("");
     }
   };
 
@@ -1068,8 +1112,36 @@ const App = () => {
     }
   };
 
-  const handleViewReport = () => {
-    if (checkVerification()) setShowReportModal(true);
+  const handleViewReport = async () => {
+    if (checkVerification()) {
+      setShowReportModal(true);
+      if (!aiReport && !isGeneratingReport) {
+        setIsGeneratingReport(true);
+        setAiReport("");
+        try {
+          const res = await fetch(`${API_BASE}/api/generate-ai-report`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              channelId: activeChannelId,
+              readApiKey: activeReadApiKey,
+              patientName,
+              patientDetails
+            })
+          });
+          const data = await res.json();
+          if (data.ok) {
+            setAiReport(data.report);
+          } else {
+            setAiReport(`⚠️ Report Generation Failed: ${data.error}`);
+          }
+        } catch (e) {
+          setAiReport(`⚠️ Failed to connect to AI engine: ${e.message}`);
+        } finally {
+          setIsGeneratingReport(false);
+        }
+      }
+    }
   };
 
   const handleDownloadReport = () => {
@@ -1362,62 +1434,20 @@ const App = () => {
             )}
 
             <div>
-              <h2 className="text-lg font-bold text-slate-900 mb-3">Vitals Summary</h2>
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr className="bg-slate-100">
-                    <th className="border border-slate-300 px-4 py-2 text-left text-sm font-bold text-slate-900">Metric</th>
-                    <th className="border border-slate-300 px-4 py-2 text-left text-sm font-bold text-slate-900">Latest</th>
-                    <th className="border border-slate-300 px-4 py-2 text-left text-sm font-bold text-slate-900">Avg</th>
-                    <th className="border border-slate-300 px-4 py-2 text-left text-sm font-bold text-slate-900">Min</th>
-                    <th className="border border-slate-300 px-4 py-2 text-left text-sm font-bold text-slate-900">Max</th>
-                    <th className="border border-slate-300 px-4 py-2 text-left text-sm font-bold text-slate-900">SL (Safe Limit)</th>
-                    <th className="border border-slate-300 px-4 py-2 text-left text-sm font-bold text-slate-900">Trend</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">SpO₂</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{spo2Stats.latest === null ? "N/A" : `${spo2Stats.latest}%`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{spo2Stats.average === null ? "N/A" : `${spo2Stats.average}%`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{spo2Stats.min === null ? "N/A" : `${spo2Stats.min}%`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{spo2Stats.max === null ? "N/A" : `${spo2Stats.max}%`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm font-semibold text-emerald-700">Minimum {ALERT_THRESHOLDS.spo2Low}%</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">{spo2Stats.trend}</td>
-                  </tr>
-                  <tr className="bg-slate-50">
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">Heart Rate</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{hrStats.latest === null ? "N/A" : `${hrStats.latest} BPM`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{hrStats.average === null ? "N/A" : `${hrStats.average} BPM`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{hrStats.min === null ? "N/A" : `${hrStats.min} BPM`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{hrStats.max === null ? "N/A" : `${hrStats.max} BPM`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm font-semibold text-emerald-700">From {ALERT_THRESHOLDS.hrLow} to {ALERT_THRESHOLDS.hrHigh} BPM</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">{hrStats.trend}</td>
-                  </tr>
-                  <tr>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">Temperature</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{tempStats.latest === null ? "N/A" : `${tempStats.latest} °C`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{tempStats.average === null ? "N/A" : `${tempStats.average} °C`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{tempStats.min === null ? "N/A" : `${tempStats.min} °C`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm text-slate-700">{tempStats.max === null ? "N/A" : `${tempStats.max} °C`}</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm font-semibold text-emerald-700">Maximum {ALERT_THRESHOLDS.tempHigh.toFixed(1)} °C</td>
-                    <td className="border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700">{tempStats.trend}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div>
-              <h2 className="text-lg font-bold text-slate-900 mb-3">AI Interpretations & Layperson Insights</h2>
-              <div className="space-y-4">
-                {insights.map((insight, idx) => (
-                  <div key={idx} className={`p-4 rounded-xl border-l-4 ${insight.type === 'danger' ? 'bg-rose-50 border-rose-500' :
-                    insight.type === 'caution' ? 'bg-amber-50 border-amber-500' : 'bg-emerald-50 border-emerald-500'
-                    }`}>
-                    <p className="text-[11px] font-bold tracking-[0.1em] text-slate-500 uppercase mb-1">Clinical Signature: {insight.clinical}</p>
-                    <p className="text-sm font-semibold text-slate-900">{insight.layperson}</p>
+              <h2 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">
+                ✨ AI Medical Analysis (Last 7 Days)
+              </h2>
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 min-h-[150px]">
+                {isGeneratingReport ? (
+                  <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-3 py-10">
+                    <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
+                    <p className="text-sm font-semibold animate-pulse">Analyzing 1-week ThingSpeak history via Google Gemini...</p>
                   </div>
-                ))}
+                ) : (
+                  <pre className="whitespace-pre-wrap font-sans text-sm text-slate-700 leading-relaxed">
+                    {aiReport || "No AI report available."}
+                  </pre>
+                )}
               </div>
             </div>
           </div>
@@ -1490,9 +1520,6 @@ const App = () => {
       {shouldShowAlertPopup ? (
         <AlertPopup
           alerts={activeAlerts}
-          onAcknowledge={() => {
-            setPopupMutedUntilMs(Date.now() + 15 * 1000);
-          }}
           onSnooze={async () => {
             const until = Date.now() + 2 * 60 * 1000; // 2 minutes
             setIsServerSnoozed(true);
@@ -1529,11 +1556,11 @@ const App = () => {
           </div>
 
           <div className="flex flex-wrap items-center justify-center gap-3">
-            <div className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all duration-300 ${isConnected ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : "bg-slate-50 text-slate-500 border border-slate-100"}`}>
-              <div className={`h-1.5 w-1.5 rounded-full ${isConnected ? "bg-emerald-500 animate-pulse" : "bg-slate-300"}`} />
-              {isConnected ? "LIVE MONITORING" : "OFFLINE"}
+            <div className={`flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-bold transition-all duration-300 ${isDeviceOffline ? "bg-amber-50 text-amber-600 border-amber-200 animate-pulse" : (isConnected ? "bg-emerald-50 text-emerald-600 border border-emerald-100" : "bg-slate-50 text-slate-500 border border-slate-100")}`}>
+              <div className={`h-1.5 w-1.5 rounded-full ${isDeviceOffline ? "bg-amber-500" : (isConnected ? "bg-emerald-500 animate-pulse" : "bg-slate-300")}`} />
+              {isDeviceOffline ? "DEVICE OFFLINE" : (isConnected ? "LIVE MONITORING" : "OFFLINE")}
             </div>
-            {isConnected ? (
+            {isConnected && !isDeviceOffline ? (
               <div className="flex items-center gap-2 rounded-xl bg-indigo-50 border border-indigo-100 px-4 py-2 text-indigo-600 text-xs font-bold">
                 <Clock size={14} />
                 Last update {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -1543,7 +1570,7 @@ const App = () => {
               <Wifi size={14} />
               Channel {activeChannelId || "---"}
             </div>
-            <div className="flex items-center gap-2 rounded-xl bg-slate-50 border border-slate-200 px-4 py-2 text-slate-600 text-xs font-bold">
+            <div className={`flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-bold ${isDeviceOffline ? "bg-amber-50 text-amber-700 border-amber-300" : "bg-slate-50 border-slate-200 text-slate-600"}`}>
               {connectionStatus}
             </div>
 

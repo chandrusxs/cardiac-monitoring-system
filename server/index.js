@@ -59,6 +59,7 @@ const config = {
   lastDirectDataTime: 0,        // Timestamp of last direct sensor POST
   isDirectMode: false,           // True when receiving direct sensor data
   directFeedBuffer: [],          // Rolling buffer of direct sensor readings (ThingSpeak format)
+  isDeviceOffline: false,        // Start as false; let the timer determine offline status
 };
 
 // ─── JSON Backup File ────────────────────────────────────────────────
@@ -146,6 +147,8 @@ const setupWebSocket = (server) => {
     ws.send(JSON.stringify({
       type: "INIT_STATE",
       isMonitoring: config.isMonitoring,
+      patientName: config.patientName,
+      patientDetails: config.patientDetails,
       isAlertSystemEnabled: config.isAlertSystemEnabled,
       muteUntil: config.muteUntil,
       isServerSnoozed: Date.now() < config.muteUntil,
@@ -153,6 +156,7 @@ const setupWebSocket = (server) => {
       criticalElapsedMs: config.criticalStartTime ? Date.now() - config.criticalStartTime : 0,
       latestVitals: config.latestVitals,
       callStatus: config.isCallLoopRunning ? "calling" : "idle",
+      isDeviceOffline: config.isDeviceOffline,
     }));
 
     ws.on("close", () => {
@@ -199,6 +203,7 @@ const broadcastAlertState = () => {
     isServerSnoozed: now < config.muteUntil,
     callStatus: config.isCallLoopRunning ? "calling" : "idle",
     isMonitoring: config.isMonitoring,
+    isDeviceOffline: config.isDeviceOffline,
   });
 };
 
@@ -211,19 +216,32 @@ const startPrecisionTimer = () => {
   if (precisionTimerInterval) return;
 
   precisionTimerInterval = setInterval(() => {
+    const now = Date.now();
+
+    // Hardware Offline Detection
+    if (config.isMonitoring && config.lastFeedTimestamp) {
+      const isOffline = (now - new Date(config.lastFeedTimestamp).getTime()) > 60000;
+      if (isOffline && !config.isDeviceOffline) {
+        console.log(`[MONITOR] 🔴 Device Offline (No data for >60s). Pausing SOS logic.`);
+        config.isDeviceOffline = true;
+      } else if (!isOffline && config.isDeviceOffline) {
+        console.log(`[MONITOR] 🟢 Device Reconnected.`);
+        config.isDeviceOffline = false;
+      }
+    }
+
     if (!config.criticalStartTime || !config.isMonitoring || !config.isAlertSystemEnabled) {
       broadcastAlertState();
       return;
     }
 
-    const now = Date.now();
     const elapsedMs = now - config.criticalStartTime;
 
     // Broadcast state every second for precise countdown on frontend
     broadcastAlertState();
 
-    // Check if threshold have elapsed — trigger calls
-    if (elapsedMs >= CRITICAL_THRESHOLD_MS) {
+    // Check if threshold have elapsed — trigger calls (only if ONLINE)
+    if (elapsedMs >= CRITICAL_THRESHOLD_MS && !config.isDeviceOffline) {
       if (now < config.muteUntil) return; // Snoozed
 
       if (!config.isCallLoopRunning) {
@@ -309,6 +327,7 @@ app.post("/api/config", async (req, res) => {
   config.channelId = cleanChannelId;
   config.readApiKey = cleanKey;
   config.patientName = (req.body.patientName || "Patient").trim();
+  config.patientDetails = (req.body.patientDetails || "").trim();
   config.isMonitoring = true;
   config.criticalStartTime = null; // Reset persistence timer for new monitoring session
   config.latestVitals = null;
@@ -316,6 +335,9 @@ app.post("/api/config", async (req, res) => {
   if (req.body.isAlertSystemEnabled !== undefined) {
     config.isAlertSystemEnabled = Boolean(req.body.isAlertSystemEnabled);
   }
+  if (req.body.patientName) config.patientName = req.body.patientName.trim();
+  if (req.body.patientDetails) config.patientDetails = req.body.patientDetails.trim();
+  config.criticalStartTime = null; // Reset persistence timer for new monitoring session
 
   console.log(`Background Monitoring Activated for: ${config.patientName} (Channel: ${config.channelId}, Alerts: ${config.isAlertSystemEnabled ? "ON" : "OFF"})`);
 
@@ -336,6 +358,24 @@ app.post("/api/config", async (req, res) => {
   });
 });
 
+app.post("/api/patient", (req, res) => {
+  if (req.body.patientName !== undefined) config.patientName = req.body.patientName.trim();
+  if (req.body.patientDetails !== undefined) config.patientDetails = req.body.patientDetails.trim();
+  console.log(`[PATIENT] Info updated: ${config.patientName} (${config.patientDetails})`);
+  res.json({ ok: true, patientName: config.patientName, patientDetails: config.patientDetails });
+});
+
+const cancelActiveCalls = () => {
+  if (twilioClient && config.activeCallSids && config.activeCallSids.length > 0) {
+    console.log(`[SOS] Canceling ${config.activeCallSids.length} active Twilio calls...`);
+    config.activeCallSids.forEach(sid => {
+      twilioClient.calls(sid).update({ status: 'canceled' })
+        .catch(e => console.error(`[SOS] Failed to cancel call ${sid}:`, e.message));
+    });
+    config.activeCallSids = [];
+  }
+};
+
 app.post("/api/alert-system/toggle", (req, res) => {
   if (req.body.enabled !== undefined) {
     config.isAlertSystemEnabled = Boolean(req.body.enabled);
@@ -346,6 +386,7 @@ app.post("/api/alert-system/toggle", (req, res) => {
   // Reset critical timer when alerts are toggled off
   if (!config.isAlertSystemEnabled) {
     config.criticalStartTime = null;
+    cancelActiveCalls();
   }
 
   console.log(`Global Alert System toggled to: ${config.isAlertSystemEnabled ? "ON" : "OFF"}`);
@@ -357,6 +398,7 @@ app.post("/api/alert-system/snooze", (req, res) => {
   const { untilMs } = req.body;
   if (typeof untilMs === "number") {
     config.muteUntil = untilMs;
+    cancelActiveCalls();
     const minutes = Math.round((untilMs - Date.now()) / 60000);
     console.log(`[SOS] ${config.patientName} snoozed. System muted for ${minutes} minutes (until ${new Date(untilMs).toLocaleTimeString()})`);
     broadcastAlertState(); // Push update immediately
@@ -370,61 +412,67 @@ app.post("/api/stop", (req, res) => {
   config.isMonitoring = false;
   config.criticalStartTime = null; // Clear all alert state
   config.latestVitals = null;
+  cancelActiveCalls();
   console.log(`Background Monitoring Deactivated by User.`);
   broadcastAlertState(); // Push update immediately
   broadcastToClients({ type: "MONITORING_STOPPED" });
   res.json({ ok: true, message: "Monitoring stopped." });
 });
 
-// ─── Twilio Voice SOS (FIXED: uses inline TwiML instead of deprecated twimlets) ──
-const triggerVoiceSOS = async (patientName) => {
+// ─── Twilio Voice SOS ────────────────────────────────────────────────
+const triggerVoiceSOS = async (patientName, patientDetails) => {
   const doctorPhone = process.env.DOCTOR_PHONE;
   const caretakerPhone = process.env.CARETAKER_PHONE;
   const fromPhone = process.env.TWILIO_PHONE_NUMBER;
 
-  if (twilioClient && doctorPhone && caretakerPhone && fromPhone) {
+  // Only need twilioClient + fromPhone + at least one recipient
+  const recipients = [];
+  if (doctorPhone) recipients.push({ phone: doctorPhone, label: "Doctor" });
+  if (caretakerPhone) recipients.push({ phone: caretakerPhone, label: "Caretaker" });
+
+  if (twilioClient && fromPhone && recipients.length > 0) {
     try {
-      // Use inline TwiML instead of deprecated twimlets.com
-      const twimlMessage = `<Response><Say voice="alice" language="en-US">Emergency Alert. Critical vitals detected for patient ${patientName}. Please check the dashboard immediately. Repeating. Emergency Alert. Critical vitals detected for patient ${patientName}. Please check the dashboard immediately.</Say><Pause length="2"/><Say voice="alice" language="en-US">This is an automated alert from the Cardiac Monitoring System. Please respond immediately.</Say></Response>`;
+      const detailsSpeech = patientDetails ? `Patient ID ${patientDetails}.` : "";
+      const twimlMessage = `<Response><Say voice="alice" language="en-US">Emergency Alert. Critical vitals detected for patient ${patientName}. ${detailsSpeech} Please check the dashboard immediately. Repeating. Emergency Alert. Critical vitals detected for patient ${patientName}. ${detailsSpeech} Please check the dashboard immediately.</Say><Pause length="2"/><Say voice="alice" language="en-US">This is an automated alert from the Cardiac Monitoring System. Please respond immediately.</Say></Response>`;
 
       const callOptions = {
         twiml: twimlMessage,
         from: fromPhone,
       };
 
-      // Return the SIDs for the new calls
-      const results = await Promise.all([
-        twilioClient.calls.create({ ...callOptions, to: doctorPhone })
-          .then(call => ({ sid: call.sid, recipient: 'Doctor' }))
-          .catch(e => {
-            console.error(`[SOS] Call to Doctor FAILED (code: ${e.code}): ${e.message}`);
-            if (e.code === 21608) {
-              console.error(`[SOS] ⚠️ TWILIO TRIAL: ${doctorPhone} is NOT verified. Go to https://www.twilio.com/console/phone-numbers/verified to add it.`);
-            }
-            return null;
-          }),
-        twilioClient.calls.create({ ...callOptions, to: caretakerPhone })
-          .then(call => ({ sid: call.sid, recipient: 'Caretaker' }))
-          .catch(e => {
-            console.error(`[SOS] Call to Caretaker FAILED (code: ${e.code}): ${e.message}`);
-            if (e.code === 21608) {
-              console.error(`[SOS] ⚠️ TWILIO TRIAL: ${caretakerPhone} is NOT verified. Go to https://www.twilio.com/console/phone-numbers/verified to add it.`);
-            }
-            return null;
-          })
-      ]);
+      console.log(`[SOS] Dispatching calls to: ${recipients.map(r => r.label).join(", ")}...`);
+
+      const results = await Promise.all(
+        recipients.map(({ phone, label }) =>
+          twilioClient.calls.create({ ...callOptions, to: phone })
+            .then(call => {
+              console.log(`[SOS] ✅ Call to ${label} (${phone}) initiated. SID: ${call.sid}`);
+              return { sid: call.sid, recipient: label };
+            })
+            .catch(e => {
+              console.error(`[SOS] ❌ Call to ${label} FAILED (code: ${e.code}): ${e.message}`);
+              if (e.code === 21608) {
+                console.error(`[SOS] ⚠️ TWILIO TRIAL: ${phone} is NOT verified. Go to https://www.twilio.com/console/phone-numbers/verified to add it.`);
+              }
+              return null;
+            })
+        )
+      );
 
       const successful = results.filter(r => r !== null);
       const sids = successful.map(r => r.sid);
-      console.log(`[SOS] Automated voice dispatch triggered for: ${successful.map(r => r.recipient).join(', ')}. SIDs: ${sids.join(", ")}`);
 
-      // Broadcast call status to frontend
-      broadcastToClients({
-        type: "CALL_DISPATCHED",
-        recipients: successful.map(r => r.recipient),
-        sids,
-        timestamp: Date.now(),
-      });
+      if (successful.length > 0) {
+        console.log(`[SOS] Voice dispatch complete. ${successful.length}/${recipients.length} calls successful.`);
+        broadcastToClients({
+          type: "CALL_DISPATCHED",
+          recipients: successful.map(r => r.recipient),
+          sids,
+          timestamp: Date.now(),
+        });
+      } else {
+        console.error(`[SOS] All calls failed! Check Twilio configuration.`);
+      }
 
       return sids;
     } catch (error) {
@@ -433,9 +481,8 @@ const triggerVoiceSOS = async (patientName) => {
   } else {
     const missing = [];
     if (!twilioClient) missing.push("twilioClient");
-    if (!doctorPhone) missing.push("DOCTOR_PHONE");
-    if (!caretakerPhone) missing.push("CARETAKER_PHONE");
     if (!fromPhone) missing.push("TWILIO_PHONE_NUMBER");
+    if (recipients.length === 0) missing.push("DOCTOR_PHONE or CARETAKER_PHONE");
     console.error(`[SOS] Cannot dispatch calls. Missing: ${missing.join(", ")}`);
   }
   return [];
@@ -487,19 +534,19 @@ const pollAndRetryCalls = async () => {
 
       if (allFinished) {
         console.log(`[SOS] Previous calls ended but patient is still in danger. Triggering IMMEDIATE retry...`);
-        config.activeCallSids = await triggerVoiceSOS(config.patientName);
+        config.activeCallSids = await triggerVoiceSOS(config.patientName, config.patientDetails);
       }
       // If not finished (still ringing), just wait for next 3s poll
     } else {
       // No active calls yet, trigger them
-      config.activeCallSids = await triggerVoiceSOS(config.patientName);
+      config.activeCallSids = await triggerVoiceSOS(config.patientName, config.patientDetails);
     }
   }, 3000); // Check every 3 seconds for immediate reaction
 };
 
 // ─── Critical Vitals Detection (shared by both direct and ThingSpeak) ──
 const checkCriticalVitals = (spo2, hr, tempConverted) => {
-  if (!config.isAlertSystemEnabled) {
+  if (!config.isAlertSystemEnabled || !config.isMonitoring) {
     if (config.criticalStartTime) {
       config.criticalStartTime = null;
       broadcastAlertState();
@@ -508,9 +555,9 @@ const checkCriticalVitals = (spo2, hr, tempConverted) => {
   }
 
   const isCritical =
-    (Number.isFinite(spo2) && spo2 > 0 && spo2 < DANGER_LIMITS.spo2Low) ||
-    (Number.isFinite(hr) && (hr > DANGER_LIMITS.hrHigh || (hr > 0 && hr < DANGER_LIMITS.hrLow))) ||
-    (Number.isFinite(tempConverted) && (tempConverted > DANGER_LIMITS.tempHigh || (tempConverted > 0 && tempConverted < DANGER_LIMITS.tempLow)));
+    (Number.isFinite(spo2) && spo2 < DANGER_LIMITS.spo2Low) ||
+    (Number.isFinite(hr) && (hr > DANGER_LIMITS.hrHigh || hr < DANGER_LIMITS.hrLow)) ||
+    (Number.isFinite(tempConverted) && (tempConverted > DANGER_LIMITS.tempHigh || tempConverted < DANGER_LIMITS.tempLow));
 
   if (isCritical) {
     if (!config.criticalStartTime) {
@@ -548,7 +595,8 @@ app.post("/api/sensor-data", (req, res) => {
   }
 
   const now = Date.now();
-  const tempConverted = Number.isFinite(parsedTemp) ? convertTemp(parsedTemp) : null;
+  // ESP8266 already sends temperature in Celsius — use directly
+  const tempValue = Number.isFinite(parsedTemp) ? Number(parsedTemp.toFixed(1)) : null;
 
   // Update state
   config.lastDirectDataTime = now;
@@ -556,7 +604,7 @@ app.post("/api/sensor-data", (req, res) => {
   config.latestVitals = {
     spo2: Number.isFinite(parsedSpo2) ? parsedSpo2 : null,
     hr: Number.isFinite(parsedHr) ? parsedHr : null,
-    temp: tempConverted,
+    temp: tempValue,
   };
   config.lastFeedTimestamp = new Date(now).toISOString();
 
@@ -582,27 +630,27 @@ app.post("/api/sensor-data", (req, res) => {
   }
   backupDirty = true;
 
-  // Broadcast to all WebSocket clients INSTANTLY
-  broadcastToClients({
-    type: "FEED_UPDATE",
-    feeds: config.directFeedBuffer,
-    source: "direct",
-    channelId: config.channelId,
-    isAlertSystemEnabled: config.isAlertSystemEnabled,
-    muteUntil: config.muteUntil,
-    isServerSnoozed: now < config.muteUntil,
-    latestVitals: config.latestVitals,
-    timestamp: now,
-  });
+  // Broadcast to all WebSocket clients INSTANTLY (only if monitoring is ON)
+  if (config.isMonitoring) {
+    broadcastToClients({
+      type: "FEED_UPDATE",
+      feeds: config.directFeedBuffer,
+      source: "direct",
+      channelId: config.channelId,
+      isAlertSystemEnabled: config.isAlertSystemEnabled,
+      muteUntil: config.muteUntil,
+      isServerSnoozed: now < config.muteUntil,
+      latestVitals: config.latestVitals,
+      timestamp: now,
+    });
+  }
 
   // Run critical vitals detection
-  if (config.isMonitoring) {
-    checkCriticalVitals(
-      config.latestVitals.spo2,
-      config.latestVitals.hr,
-      config.latestVitals.temp
-    );
-  }
+  checkCriticalVitals(
+    config.latestVitals.spo2,
+    config.latestVitals.hr,
+    config.latestVitals.temp
+  );
 
   return res.json({ ok: true, timestamp: now });
 });
@@ -673,21 +721,27 @@ const startBackgroundMonitor = () => {
       config.latestVitals = { spo2, hr, temp: tempConverted };
       config.lastFeedTimestamp = feedTimestamp;
 
-      // Broadcast feeds to all WebSocket clients
-      broadcastToClients({
-        type: "FEED_UPDATE",
-        feeds,
-        source: "thingspeak",
-        channelId: config.channelId,
-        isAlertSystemEnabled: config.isAlertSystemEnabled,
-        muteUntil: config.muteUntil,
-        isServerSnoozed: Date.now() < config.muteUntil,
-        latestVitals: config.latestVitals,
-        timestamp: Date.now(),
-      });
+      // Broadcast (only if monitoring is ON)
+      if (config.isMonitoring) {
+        broadcastToClients({
+          type: "FEED_UPDATE",
+          feeds: tsData.feeds,
+          source: "thingspeak",
+          channelId: config.channelId,
+          isAlertSystemEnabled: config.isAlertSystemEnabled,
+          isServerSnoozed: Date.now() < config.muteUntil,
+          muteUntil: config.muteUntil,
+          latestVitals: config.latestVitals,
+          timestamp: Date.now(),
+        });
+      }
 
-      // Critical vitals detection
-      checkCriticalVitals(spo2, hr, tempConverted);
+      // Critical vitals detection — only when NOT in direct mode
+      // (prevents stale ThingSpeak data from resetting the critical timer
+      //  set by real-time direct sensor data)
+      if (!config.isDirectMode) {
+        checkCriticalVitals(spo2, hr, tempConverted);
+      }
     } catch (err) {
       console.error("Background Monitor Error:", err.message);
     }
@@ -755,25 +809,25 @@ app.post("/api/sos", async (req, res) => {
   const caretakerPhone = process.env.CARETAKER_PHONE;
   const fromPhone = process.env.TWILIO_PHONE_NUMBER;
 
-  if (twilioClient && doctorPhone && caretakerPhone && fromPhone) {
+  // Build recipient list (skip empty numbers)
+  const recipients = [];
+  if (doctorPhone) recipients.push({ phone: doctorPhone, label: "Doctor" });
+  if (caretakerPhone) recipients.push({ phone: caretakerPhone, label: "Caretaker" });
+
+  if (twilioClient && fromPhone && recipients.length > 0) {
     try {
-      // Use inline TwiML instead of deprecated twimlets.com
       const twimlMessage = `<Response><Say voice="alice" language="en-US">Emergency Alert. Critical vitals detected for patient ${patientName}. Please check the dashboard immediately.</Say></Response>`;
 
-      const results = await Promise.all([
-        twilioClient.calls.create({ twiml: twimlMessage, to: doctorPhone, from: fromPhone })
-          .then(call => ({ recipient: 'Doctor', sid: call.sid, ok: true }))
-          .catch(e => {
-            if (e.code === 21608) console.error(`[TWILIO ERROR] Manual test for Doctor failed: Number is unverified in your Trial account.`);
-            return { recipient: 'Doctor', error: e.message, code: e.code, ok: false };
-          }),
-        twilioClient.calls.create({ twiml: twimlMessage, to: caretakerPhone, from: fromPhone })
-          .then(call => ({ recipient: 'Caretaker', sid: call.sid, ok: true }))
-          .catch(e => {
-            if (e.code === 21608) console.error(`[TWILIO ERROR] Manual test for Caretaker failed: Number is unverified in your Trial account.`);
-            return { recipient: 'Caretaker', error: e.message, code: e.code, ok: false };
-          })
-      ]);
+      const results = await Promise.all(
+        recipients.map(({ phone, label }) =>
+          twilioClient.calls.create({ twiml: twimlMessage, to: phone, from: fromPhone })
+            .then(call => ({ recipient: label, sid: call.sid, ok: true }))
+            .catch(e => {
+              if (e.code === 21608) console.error(`[TWILIO ERROR] Manual test for ${label} failed: ${phone} is unverified in your Trial account.`);
+              return { recipient: label, error: e.message, code: e.code, ok: false };
+            })
+        )
+      );
 
       console.log(`[SOS] Manual SOS Results for ${patientName}:`, results);
 
@@ -798,6 +852,87 @@ app.post("/api/sos", async (req, res) => {
     recipients: ["Doctor (+91-9876543210)", "Caretaker (+91-9988776655)"],
     timestamp: new Date().toISOString()
   });
+});
+
+app.post("/api/generate-ai-report", async (req, res) => {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ ok: false, error: "GEMINI_API_KEY is not configured in .env" });
+  }
+
+  const { channelId, readApiKey, patientName, patientDetails } = req.body || {};
+  if (!channelId || !readApiKey) {
+    return res.status(400).json({ ok: false, error: "Missing Channel ID or Read API Key" });
+  }
+
+  try {
+    // 1. Fetch 1-week historical data from ThingSpeak (average per 60 minutes)
+    const tsUrl = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${readApiKey}&days=7&average=60`;
+    const tsRes = await fetch(tsUrl);
+    if (!tsRes.ok) throw new Error("Failed to fetch history from ThingSpeak");
+    const tsData = await tsRes.json();
+    const feeds = tsData.feeds || [];
+
+    if (feeds.length === 0) {
+      return res.status(400).json({ ok: false, error: "Not enough historical data to generate a report." });
+    }
+
+    // 2. Format data for the AI prompt
+    let dataStr = "Timestamp | SpO2 (%) | Heart Rate (BPM) | Temperature (°C)\n";
+    feeds.forEach(f => {
+      if (f.field1 || f.field2 || f.field3) {
+        dataStr += `${new Date(f.created_at).toLocaleString()} | ${f.field1 || "N/A"} | ${f.field2 || "N/A"} | ${f.field3 || "N/A"}\n`;
+      }
+    });
+
+    const prompt = `You are an expert cardiologist analyzing data from an IoT continuous cardiac monitoring system.
+Patient Name: ${patientName || "Unknown"}
+Patient ID: ${patientDetails || "Unknown"}
+Data timeframe: Last 7 days (1-hour averages).
+
+Here is the data:
+${dataStr}
+
+Please provide a highly professional, structured medical analysis report. Include:
+1. Patient Overview
+2. SpO2 Analysis (Identify hypoxemia trends if any, SpO2 < 90 is critical)
+3. Heart Rate Analysis (Identify tachycardia/bradycardia, normal resting is 60-100 BPM)
+4. Temperature Analysis (Identify fever/hypothermia, normal is ~36.5-37.5°C)
+5. Clinical Recommendations
+Make it read like a formal hospital discharge or monitoring summary. Use Markdown formatting. Keep it concise but clinical.`;
+
+    // 3. Call Gemini via REST using the latest flash alias (most reliable)
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`;
+    const aiRes = await fetch(geminiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 1000, temperature: 0.2 }
+      })
+    });
+
+    if (!aiRes.ok) {
+      const errTxt = await aiRes.text();
+      console.error("Gemini API Error:", errTxt);
+      if (aiRes.status === 429) {
+        throw new Error("Google Gemini API Free-Tier Quota Exceeded. Please wait 60 seconds and try again.");
+      } else if (aiRes.status === 503) {
+        throw new Error("Google Gemini is experiencing high demand. Please try again in a few moments.");
+      }
+      throw new Error(`Gemini API failed: ${aiRes.status}`);
+    }
+
+    const aiData = await aiRes.json();
+    const aiText = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!aiText) throw new Error("Received empty response from AI");
+
+    res.json({ ok: true, report: aiText });
+  } catch (error) {
+    console.error("[AI REPORT ERROR]", error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
 });
 
 // ─── Call Status Endpoint ────────────────────────────────────────────
@@ -825,7 +960,7 @@ if (isDirectExecution) {
   if (fs.existsSync(distPath)) {
     app.use(express.static(distPath));
     // SPA fallback: serve index.html for any non-API route
-    app.get("*", (req, res) => {
+    app.get("*all", (req, res) => {
       if (!req.path.startsWith("/api/")) {
         res.sendFile(path.join(distPath, "index.html"));
       }
