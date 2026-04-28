@@ -90,12 +90,16 @@ const saveBackup = (entries) => {
 // Debounced backup writer (write at most every 10 seconds)
 let backupBuffer = loadBackup();
 let backupDirty = false;
-setInterval(() => {
-  if (backupDirty) {
-    saveBackup(backupBuffer);
-    backupDirty = false;
-  }
-}, 10000);
+const startBackupTimer = () => {
+  setInterval(() => {
+    if (backupDirty) {
+      saveBackup(backupBuffer);
+      backupDirty = false;
+    }
+  }, 10000);
+};
+
+export { startBackgroundMonitor, startPrecisionTimer, startBackupTimer };
 
 const ALERT_THRESHOLDS = {
   spo2Low: 94,
@@ -256,7 +260,7 @@ const startPrecisionTimer = () => {
   console.log("[TIMER] Precision timer started (1s interval).");
 };
 
-export { startBackgroundMonitor, startPrecisionTimer };
+// Moved export to the backup timer section
 
 // ─── Express Routes ──────────────────────────────────────────────────
 
@@ -960,6 +964,7 @@ if (isDirectExecution) {
   setupWebSocket(httpServer);
   startBackgroundMonitor();
   startPrecisionTimer();
+  startBackupTimer();
 
   // In production: serve the built frontend from dist/
   const distPath = path.join(__dirname, "..", "dist");
