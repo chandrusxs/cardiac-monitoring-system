@@ -34,7 +34,7 @@ console.log = (...args) => {
   originalLog(`[${timeStr}]`, ...args);
 };
 
-const CRITICAL_THRESHOLD_MS = 30000; // 30 seconds of continuous critical vitals before alert
+const CRITICAL_THRESHOLD_MS = 15000; // 15 seconds of continuous critical vitals before alert
 
 // ─── Shared State ────────────────────────────────────────────────────
 const SENSOR_API_KEY = process.env.SENSOR_API_KEY || "cardiac-monitor-2026-secret";
@@ -866,21 +866,22 @@ app.post("/api/generate-ai-report", async (req, res) => {
     return res.status(500).json({ ok: false, error: "GEMINI_API_KEY is not configured in .env" });
   }
 
-  const { channelId, readApiKey, patientName, patientDetails } = req.body || {};
+  const { channelId, readApiKey, patientName, patientDetails, days = 7 } = req.body || {};
   if (!channelId || !readApiKey) {
     return res.status(400).json({ ok: false, error: "Missing Channel ID or Read API Key" });
   }
 
   try {
-    // 1. Fetch 1-week historical data from ThingSpeak (average per 60 minutes)
-    const tsUrl = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${readApiKey}&days=7&average=60`;
+    // 1. Fetch historical data from ThingSpeak (average per 60 minutes)
+    // Dynamic 'days' parameter: 1, 10, or 30
+    const tsUrl = `https://api.thingspeak.com/channels/${channelId}/feeds.json?api_key=${readApiKey}&days=${days}&average=60`;
     const tsRes = await fetch(tsUrl);
     if (!tsRes.ok) throw new Error("Failed to fetch history from ThingSpeak");
     const tsData = await tsRes.json();
     const feeds = tsData.feeds || [];
 
     if (feeds.length === 0) {
-      return res.status(400).json({ ok: false, error: "Not enough historical data to generate a report." });
+      return res.status(400).json({ ok: false, error: `Not enough historical data for the last ${days} days to generate a report.` });
     }
 
     // 2. Format data for the AI prompt
@@ -891,21 +892,25 @@ app.post("/api/generate-ai-report", async (req, res) => {
       }
     });
 
-    const prompt = `You are an expert cardiologist analyzing data from an IoT continuous cardiac monitoring system.
-Patient Name: ${patientName || "Unknown"}
-Patient ID: ${patientDetails || "Unknown"}
-Data timeframe: Last 7 days (1-hour averages).
+    const prompt = `You are a clinical cardiologist. Analyze the following IoT telemetry data for the last ${days} days and generate a highly professional "Cardiac Monitoring Snapshot". 
 
-Here is the data:
-${dataStr}
+Provide a detailed clinical observation for each vital. Total length should be around 5-8 sentences.
 
-Please provide a highly professional, structured medical analysis report. Include:
-1. Patient Overview
-2. SpO2 Analysis (Identify hypoxemia trends if any, SpO2 < 90 is critical)
-3. Heart Rate Analysis (Identify tachycardia/bradycardia, normal resting is 60-100 BPM)
-4. Temperature Analysis (Identify fever/hypothermia, normal is ~36.5-37.5°C)
-5. Clinical Recommendations
-Make it read like a formal hospital discharge or monitoring summary. Use Markdown formatting. Keep it concise but clinical.`;
+Template:
+Cardiac Monitoring Snapshot
+HR: [Value] bpm (Min: [Min] / Max: [Max]) – [Detailed observation]
+SpO₂: [Value]% (Min: [Min]) – [Detailed observation]
+Temp: [Value]°C – [Detailed observation]
+Summary: [Overall status overview]
+Note: [Specific recommendation]
+
+Rules:
+- Replace [Value] with latest, [Min]/[Max] with the data range.
+- DO NOT TRUNCATE. Ensure the Summary and Note are fully written.
+- End the report with the word [REPORT_COMPLETE].
+
+Data:
+${dataStr}`;
 
     // 3. Call Gemini via REST using the latest flash alias (most reliable)
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`;
@@ -914,7 +919,11 @@ Make it read like a formal hospital discharge or monitoring summary. Use Markdow
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: 1000, temperature: 0.2 }
+        generationConfig: { 
+          maxOutputTokens: 2048, 
+          temperature: 0.1,
+          topP: 0.8
+        }
       })
     });
 
@@ -934,7 +943,25 @@ Make it read like a formal hospital discharge or monitoring summary. Use Markdow
 
     if (!aiText) throw new Error("Received empty response from AI");
 
-    res.json({ ok: true, report: aiText });
+    // 4. Calculate stats for the PDF
+    const calculateStats = (data, field) => {
+      const values = data.map(f => parseFloat(f[field])).filter(v => !isNaN(v));
+      if (values.length === 0) return { latest: null, min: null, max: null, average: null };
+      return {
+        latest: values[values.length - 1],
+        min: Math.min(...values),
+        max: Math.max(...values),
+        average: parseFloat((values.reduce((a, b) => a + b, 0) / values.length).toFixed(2))
+      };
+    };
+
+    const reportStats = {
+      spo2: calculateStats(feeds, 'field1'),
+      hr: calculateStats(feeds, 'field2'),
+      temp: calculateStats(feeds, 'field3')
+    };
+
+    res.json({ ok: true, report: aiText, reportStats });
   } catch (error) {
     console.error("[AI REPORT ERROR]", error);
     res.status(500).json({ ok: false, error: error.message });

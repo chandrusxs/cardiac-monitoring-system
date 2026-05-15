@@ -146,7 +146,7 @@ const buildAIInsights = ({ spo2Stats, hrStats, tempStats, dangerLimits = DANGER_
   return insights;
 };
 
-const downloadClinicalPdf = ({ patientName, patientDetails, channelId, refreshSec, spo2Stats, hrStats, tempStats, activeAlerts, isConnected, dangerLimits = DANGER_LIMITS, recoveryScore }) => {
+const downloadClinicalPdf = ({ patientName, patientDetails, channelId, refreshSec, spo2Stats, hrStats, tempStats, activeAlerts, isConnected, dangerLimits = DANGER_LIMITS, recoveryScore, aiReport }) => {
   const safeValue = (value, suffix = "") => (value === null ? "N/A" : `${value}${suffix}`);
   const insights = buildAIInsights({ spo2Stats, hrStats, tempStats, dangerLimits });
   const now = new Date().toLocaleString();
@@ -244,6 +244,11 @@ const downloadClinicalPdf = ({ patientName, patientDetails, channelId, refreshSe
       </div>
     </div>
 
+    <h3 class="section-title">AI Medical Snapshot</h3>
+    <div style="background: #f1f5f9; border-radius: 8px; padding: 16px; margin-bottom: 24px; border: 1px solid #e2e8f0;">
+      <pre style="white-space: pre-wrap; font-family: inherit; font-size: 13px; color: #0f172a; font-weight: 500; line-height: 1.6;">${aiReport || "No AI snapshot available for this timeframe."}</pre>
+    </div>
+
     <h3 class="section-title">Verified Vitals Telemetry</h3>
     <table>
       <thead>
@@ -279,11 +284,6 @@ const downloadClinicalPdf = ({ patientName, patientDetails, channelId, refreshSe
         </tr>
       </tbody>
     </table>
-
-    <h3 class="section-title">AI Interpretations & Layperson Insights</h3>
-    <div class="insights-list">
-      ${insightsHtml}
-    </div>
 
     <div class="footer">
       <div class="legal">
@@ -528,7 +528,9 @@ const App = () => {
   }, [patientName, patientDetails, isConnected, useDirectMode]);
 
   const [showReportModal, setShowReportModal] = useState(false);
+  const [reportDays, setReportDays] = useState(7);
   const [aiReport, setAiReport] = useState("");
+  const [reportStats, setReportStats] = useState(null);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [sosStatus, setSosStatus] = useState("idle");
   const [lastAutoSosTime, setLastAutoSosTime] = useState(0);
@@ -1039,7 +1041,7 @@ const App = () => {
     const timer = setInterval(() => {
       const elapsed = Date.now() - criticalStartTime;
       setCriticalElapsedMs(elapsed);
-      if (elapsed >= 30000) { // 30 seconds of continuous critical vitals
+      if (elapsed >= 15000) { // 15 seconds of continuous critical vitals
         setHasPersistedCritical(true);
       }
     }, 1000);
@@ -1112,34 +1114,36 @@ const App = () => {
     }
   };
 
-  const handleViewReport = async () => {
+  const handleViewReport = async (days = 7) => {
     if (checkVerification()) {
+      setReportDays(days);
       setShowReportModal(true);
-      if (!aiReport && !isGeneratingReport) {
-        setIsGeneratingReport(true);
-        setAiReport("");
-        try {
-          const res = await fetch(`${API_BASE}/api/generate-ai-report`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              channelId: activeChannelId,
-              readApiKey: activeReadApiKey,
-              patientName,
-              patientDetails
-            })
-          });
-          const data = await res.json();
-          if (data.ok) {
-            setAiReport(data.report);
-          } else {
-            setAiReport(`⚠️ Report Generation Failed: ${data.error}`);
-          }
-        } catch (e) {
-          setAiReport(`⚠️ Failed to connect to AI engine: ${e.message}`);
-        } finally {
-          setIsGeneratingReport(false);
+      // We always regenerate if a different timeframe is requested or if no report exists
+      setIsGeneratingReport(true);
+      setAiReport("");
+      try {
+        const res = await fetch(`${API_BASE}/api/generate-ai-report`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            channelId: activeChannelId,
+            readApiKey: activeReadApiKey,
+            patientName,
+            patientDetails,
+            days
+          })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          setAiReport(data.report);
+          setReportStats(data.reportStats);
+        } else {
+          setAiReport(`⚠️ Report Generation Failed: ${data.error}`);
         }
+      } catch (e) {
+        setAiReport(`⚠️ Failed to connect to AI engine: ${e.message}`);
+      } finally {
+        setIsGeneratingReport(false);
       }
     }
   };
@@ -1157,6 +1161,7 @@ const App = () => {
         activeAlerts,
         isConnected,
         recoveryScore,
+        aiReport,
       });
     }
   };
@@ -1168,12 +1173,13 @@ const App = () => {
         patientDetails,
         channelId: activeChannelId,
         refreshSec: activeRefreshSec,
-        spo2Stats,
-        hrStats,
-        tempStats,
+        spo2Stats: reportStats ? reportStats.spo2 : spo2Stats,
+        hrStats: reportStats ? reportStats.hr : hrStats,
+        tempStats: reportStats ? reportStats.temp : tempStats,
         activeAlerts,
         isConnected,
         recoveryScore,
+        aiReport,
       });
     }
   };
@@ -1427,26 +1433,64 @@ const App = () => {
 
           <div className="overflow-y-auto flex-1 p-6 md:p-8 space-y-6">
             {patientName.trim() && (
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <p className="text-sm font-semibold text-blue-900">{patientName}</p>
-                {patientDetails.trim() && <p className="text-xs text-blue-700 mt-1">{patientDetails}</p>}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex justify-between items-center">
+                <div>
+                  <p className="text-sm font-semibold text-blue-900">{patientName}</p>
+                  {patientDetails.trim() && <p className="text-xs text-blue-700 mt-1">{patientDetails}</p>}
+                </div>
+                <div className="flex items-center gap-2 bg-white/50 p-1 rounded-xl border border-blue-200">
+                  {[1, 7, 10, 30].map((d) => (
+                    <button
+                      key={d}
+                      disabled={isGeneratingReport}
+                      onClick={() => handleViewReport(d)}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${reportDays === d
+                          ? "bg-blue-600 text-white shadow-md"
+                          : "text-blue-600 hover:bg-blue-100"
+                        } disabled:opacity-50`}
+                    >
+                      {d}d
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
             <div>
-              <h2 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">
-                ✨ AI Medical Analysis (Last 7 Days)
-              </h2>
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 min-h-[150px]">
+              <div className="flex items-center justify-between gap-4 mb-4">
+                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                  ✨ AI Medical Snapshot
+                </h2>
+                {!aiReport && !isGeneratingReport && (
+                  <button 
+                    onClick={() => handleViewReport(reportDays)}
+                    className="text-xs font-bold bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
+                  >
+                    Generate {reportDays}d Snapshot
+                  </button>
+                )}
+              </div>
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 min-h-[200px]">
                 {isGeneratingReport ? (
                   <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-3 py-10">
                     <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
-                    <p className="text-sm font-semibold animate-pulse">Analyzing 1-week ThingSpeak history via Google Gemini...</p>
+                    <p className="text-sm font-semibold animate-pulse">Analyzing {reportDays}-day history for snapshot...</p>
                   </div>
                 ) : (
-                  <pre className="whitespace-pre-wrap font-sans text-sm text-slate-700 leading-relaxed">
-                    {aiReport || "No AI report available."}
-                  </pre>
+                  <div className="font-sans text-sm text-slate-700 leading-relaxed">
+                    {aiReport ? (
+                      <div className="bg-white border border-slate-100 rounded-lg p-5 shadow-sm">
+                        <pre className="whitespace-pre-wrap font-sans text-base text-slate-900 font-medium">
+                          {aiReport}
+                        </pre>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-10 text-slate-400">
+                        <Activity size={40} className="mb-2 opacity-20" />
+                        <p>Select a timeframe and click generate to view the snapshot.</p>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -1459,12 +1503,14 @@ const App = () => {
             >
               Close
             </button>
-            <button
-              onClick={handleDownloadFromModal}
-              className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 transition"
-            >
-              <Download size={16} /> Download PDF
-            </button>
+            {aiReport && !isGeneratingReport && (
+              <button
+                onClick={handleDownloadFromModal}
+                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 transition animate-in fade-in slide-in-from-bottom-2"
+              >
+                <Download size={16} /> Download PDF
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1603,22 +1649,12 @@ const App = () => {
             ) : null}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <button
-              onClick={handleDownloadReport}
+              onClick={() => handleViewReport(7)}
               disabled={!isConnected}
-              className={`rounded-lg border px-4 py-2 text-sm font-semibold transition ${isConnected
-                ? "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
-                : "border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed"
-                }`}
-            >
-              Download Report
-            </button>
-            <button
-              onClick={handleViewReport}
-              disabled={!isConnected}
-              className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${isConnected
-                ? "bg-slate-900 text-white hover:bg-slate-800"
+              className={`rounded-2xl px-6 py-3 text-sm font-black tracking-wide uppercase transition-all duration-300 shadow-lg hover:-translate-y-0.5 active:translate-y-0 ${isConnected
+                ? "bg-slate-900 text-white hover:bg-slate-800 shadow-slate-200"
                 : "bg-slate-200 text-slate-400 cursor-not-allowed"
                 }`}
             >

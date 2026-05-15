@@ -5,7 +5,7 @@ services:
     plan: free
     buildCommand: npm run render-build
     startCommand: npm start
-    healthCheckPath: /api/ping
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
@@ -26,4 +26,6 @@ services:
       - key: DOCTOR_PHONE
         sync: false
       - key: CARETAKER_PHONE
+        sync: false
+      - key: GEMINI_API_KEY
         sync: false
