@@ -1586,8 +1586,8 @@ const App = () => {
         />
       ) : null}
 
-      <header className="sticky top-4 z-50 mx-4 md:mx-0">
-        <div className="flex flex-col md:flex-row items-center justify-between gap-5 rounded-[2.5rem] border border-slate-100/50 bg-white/70 backdrop-blur-3xl p-5 shadow-2xl shadow-slate-200/40">
+      <header className="relative md:sticky md:top-4 z-50 mx-4 md:mx-0 mt-4 md:mt-0">
+        <div className="flex flex-col lg:flex-row items-center justify-between gap-4 md:gap-5 rounded-[2.5rem] border border-slate-100/50 bg-white/70 backdrop-blur-3xl p-4 md:p-5 shadow-2xl shadow-slate-200/40">
           <div className="flex items-center gap-5">
             <div className="relative group">
               <div className="absolute -inset-1 rounded-2xl bg-gradient-to-r from-indigo-500 to-blue-500 opacity-20 blur-sm group-hover:opacity-40 transition-opacity" />
@@ -1607,12 +1607,12 @@ const App = () => {
               {isDeviceOffline ? "DEVICE OFFLINE" : (isConnected ? "LIVE MONITORING" : "OFFLINE")}
             </div>
             {isConnected && !isDeviceOffline ? (
-              <div className="flex items-center gap-2 rounded-xl bg-indigo-50 border border-indigo-100 px-4 py-2 text-indigo-600 text-xs font-bold">
+              <div className="hidden md:flex items-center gap-2 rounded-xl bg-indigo-50 border border-indigo-100 px-4 py-2 text-indigo-600 text-xs font-bold">
                 <Clock size={14} />
                 Last update {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
               </div>
             ) : null}
-            <div className="flex items-center gap-2 rounded-xl bg-[#6366f115] border border-indigo-100 px-4 py-2 text-indigo-600 text-xs font-extrabold">
+            <div className="hidden md:flex items-center gap-2 rounded-xl bg-[#6366f115] border border-indigo-100 px-4 py-2 text-indigo-600 text-xs font-extrabold">
               <Wifi size={14} />
               Channel {activeChannelId || "---"}
             </div>
@@ -1636,7 +1636,7 @@ const App = () => {
               </div>
             ) : null}
             {!useDirectMode && (
-              <div className={`flex items-center gap-2 rounded-xl px-3 py-2 text-[10px] font-bold border ${wsConnected ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-orange-50 text-orange-700 border-orange-200"}`}>
+              <div className={`hidden md:flex items-center gap-2 rounded-xl px-3 py-2 text-[10px] font-bold border ${wsConnected ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-orange-50 text-orange-700 border-orange-200"}`}>
                 <div className={`h-1.5 w-1.5 rounded-full ${wsConnected ? "bg-emerald-500" : "bg-orange-400 animate-pulse"}`} />
                 {wsConnected ? "WS LIVE" : "WS RECONNECTING"}
               </div>
