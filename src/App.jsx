@@ -1530,6 +1530,193 @@ const App = () => {
     );
   };
 
+  const isMobile = useMediaQuery("(max-width: 767px)");
+  const [mobileTab, setMobileTab] = useState("vitals");
+
+  if (isMobile) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-200 font-sans pb-20 selection:bg-indigo-500/30">
+        {showReportModal && <ReportModal />}
+        
+        {/* SOS Popup */}
+        {sosStatus !== "idle" && (
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4">
+            <div className="w-full max-w-md rounded-3xl bg-slate-900 border border-slate-800 shadow-2xl p-8 text-center animate-in zoom-in duration-300">
+              {sosStatus === "sending" && (
+                <div className="space-y-6">
+                  <Siren size={64} className="mx-auto text-rose-500 animate-pulse" />
+                  <h2 className="text-2xl font-black text-white">Automated Emergency Detection!</h2>
+                  <p className="text-slate-400 font-medium">Placing Voice Calls to Doctor & Caretaker via Twilio.</p>
+                </div>
+              )}
+              {sosStatus === "sent" && (
+                <div className="space-y-6">
+                  <CheckCircle2 size={64} className="mx-auto text-emerald-500" />
+                  <h2 className="text-2xl font-black text-emerald-500">Voice Calls Connected!</h2>
+                  <div className="text-left bg-slate-950 p-4 rounded-xl border border-slate-800">
+                    <p className="text-sm font-bold text-slate-300 flex items-center gap-2 mb-2"><PhoneForwarded size={16} /> Calls dispatching to:</p>
+                    <ul className="text-sm text-slate-500 space-y-1 ml-6 list-disc">
+                      <li>Attending Doctor (+91-9876543210)</li>
+                      <li>Primary Caretaker (+91-9988776655)</li>
+                      <li>Local Emergency (+91-112)</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+              {sosStatus === "error" && (
+                <div className="space-y-6">
+                  <Siren size={64} className="mx-auto text-rose-800" />
+                  <h2 className="text-2xl font-black text-rose-600">Dispatch Failed!</h2>
+                  <p className="text-sm text-rose-500">Network error. Please call the emergency number manually immediately.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {shouldShowAlertPopup ? (
+          <AlertPopup
+            alerts={activeAlerts}
+            onSnooze={async () => {
+              const until = Date.now() + 2 * 60 * 1000;
+              setIsServerSnoozed(true);
+              setPopupMutedUntilMs(until);
+              if (!useDirectMode && isConnected) {
+                try {
+                  await fetch(`${API_BASE}/api/alert-system/snooze`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ untilMs: until }),
+                  });
+                } catch (e) {
+                  console.warn("Failed to sync snooze with backend:", e);
+                }
+              }
+            }}
+          />
+        ) : null}
+
+        {/* Mobile Header - Unlocked (relative instead of sticky) */}
+        <header className="relative z-40 bg-slate-900/90 border-b border-slate-800 px-4 py-3 flex items-center justify-between shadow-md">
+          <div className="flex items-center gap-3">
+             <div className="h-10 w-10 rounded-xl bg-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-900/50">
+                <Stethoscope size={20} className="text-white" />
+             </div>
+             <div>
+                <h1 className="text-base font-black text-white leading-tight">Doctor Portal</h1>
+                <p className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest leading-none mt-0.5">Mobile Monitor</p>
+             </div>
+          </div>
+          <div className={`flex items-center justify-center h-8 px-3 rounded-full border text-[10px] font-bold ${isDeviceOffline ? "bg-amber-900/30 text-amber-500 border-amber-800 animate-pulse" : (isConnected ? "bg-emerald-900/30 text-emerald-500 border-emerald-800" : "bg-slate-800 text-slate-400 border-slate-700")}`}>
+            <div className={`h-1.5 w-1.5 rounded-full mr-1.5 ${isDeviceOffline ? "bg-amber-500" : (isConnected ? "bg-emerald-500 animate-pulse" : "bg-slate-500")}`} />
+            {isDeviceOffline ? "OFFLINE" : (isConnected ? "LIVE" : "OFFLINE")}
+          </div>
+        </header>
+
+        {/* Main Content Area */}
+        <main className="p-4 space-y-5">
+          {mobileTab === "vitals" && (
+            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+               <div className="grid grid-cols-2 gap-4">
+                 <div className="col-span-2 bg-slate-900 rounded-3xl p-5 border border-slate-800 flex items-center justify-between relative overflow-hidden shadow-lg">
+                   <div className="absolute -right-4 -top-4 w-24 h-24 bg-rose-500/10 rounded-full blur-2xl" />
+                   <div>
+                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Heart Rate</p>
+                     <p className="text-5xl font-black text-white mt-1">{hrStats.latest > 0 ? hrStats.latest : "---"}</p>
+                     <p className="text-xs font-semibold text-slate-500 mt-1">BPM {hrStats.latest > 0 ? "• Live" : ""}</p>
+                   </div>
+                   <div className="h-16 w-16 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center shadow-inner">
+                     <Activity size={32} className="text-rose-500" />
+                   </div>
+                 </div>
+                 
+                 <div className="col-span-1 bg-slate-900 rounded-3xl p-5 border border-slate-800 relative overflow-hidden flex flex-col justify-between shadow-lg">
+                   <div className="absolute -right-4 -top-4 w-20 h-20 bg-cyan-500/10 rounded-full blur-xl" />
+                   <div className="h-12 w-12 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center mb-5 shadow-inner">
+                     <Droplets size={24} className="text-cyan-400" />
+                   </div>
+                   <div>
+                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Blood Oxygen</p>
+                     <p className="text-4xl font-black text-white mt-1">{spo2Stats.latest > 0 ? spo2Stats.latest : "--"}<span className="text-lg text-slate-500">%</span></p>
+                   </div>
+                 </div>
+
+                 <div className="col-span-1 bg-slate-900 rounded-3xl p-5 border border-slate-800 relative overflow-hidden flex flex-col justify-between shadow-lg">
+                   <div className="absolute -right-4 -top-4 w-20 h-20 bg-orange-500/10 rounded-full blur-xl" />
+                   <div className="h-12 w-12 rounded-xl bg-orange-500/10 border border-orange-500/20 flex items-center justify-center mb-5 shadow-inner">
+                     <Thermometer size={24} className="text-orange-400" />
+                   </div>
+                   <div>
+                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Temperature</p>
+                     <p className="text-4xl font-black text-white mt-1">{tempStats.latest > 0 ? tempStats.latest.toFixed(1) : "--"}<span className="text-lg text-slate-500">°</span></p>
+                   </div>
+                 </div>
+               </div>
+               
+               <button onClick={toggleAlertSystem} className={`w-full py-4 mt-2 rounded-2xl font-black text-xs uppercase tracking-widest transition-all shadow-lg ${isAlertSystemEnabled ? "bg-rose-600 hover:bg-rose-500 text-white shadow-[0_0_20px_rgba(225,29,72,0.3)]" : "bg-slate-800 text-slate-400 border border-slate-700"}`}>
+                  <Siren size={18} className={`inline mr-2 -mt-0.5 ${isAlertSystemEnabled ? "animate-pulse" : ""}`} />
+                  Alert System {isAlertSystemEnabled ? "ON" : "OFF"}
+               </button>
+            </div>
+          )}
+
+          {mobileTab === "charts" && (
+             <div className="space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                <TrendCard title="Heart Rate" subTitle="Live trend • Field 2" options={hrOptions} series={hrSeries} type="area" height={220} />
+                <TrendCard title="SpO2" subTitle="Live trend • Field 1" options={spo2Options} series={spo2Series} type="area" height={220} />
+                <TrendCard title="Body Temp" subTitle="Live trend • Field 3" options={tempOptions} series={tempSeries} type="area" height={220} />
+             </div>
+          )}
+
+          {mobileTab === "settings" && (
+             <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                <div className="bg-slate-900 rounded-3xl p-5 border border-slate-800 shadow-lg">
+                  <h3 className="text-sm font-bold text-white mb-4">System Settings</h3>
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center p-3 bg-slate-950 rounded-xl border border-slate-800/50">
+                      <span className="text-xs text-slate-400 font-medium">Channel ID</span>
+                      <span className="text-xs font-bold text-indigo-400">{activeChannelId}</span>
+                    </div>
+                    <div className="flex justify-between items-center p-3 bg-slate-950 rounded-xl border border-slate-800/50">
+                      <span className="text-xs text-slate-400 font-medium">WebSocket</span>
+                      <span className={`text-[10px] font-bold px-2 py-1 rounded-md ${wsConnected ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-orange-500/10 text-orange-400 border border-orange-500/20"}`}>{wsConnected ? "CONNECTED" : "DISCONNECTED"}</span>
+                    </div>
+                    <div className="flex justify-between items-center p-3 bg-slate-950 rounded-xl border border-slate-800/50">
+                      <span className="text-xs text-slate-400 font-medium">Refresh Rate</span>
+                      <span className="text-xs font-bold text-slate-300">{activeRefreshSec} sec</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900 rounded-3xl p-5 border border-slate-800 shadow-lg mt-4">
+                  <h3 className="text-sm font-bold text-white mb-4">Actions</h3>
+                  <button onClick={() => setShowReportModal(true)} className="w-full flex items-center justify-center gap-2 py-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-bold text-xs transition-colors shadow-lg shadow-indigo-900/30">
+                    <Download size={18} /> View & Export Clinical Report
+                  </button>
+                </div>
+             </div>
+          )}
+        </main>
+
+        {/* Bottom Nav */}
+        <nav className="fixed bottom-0 w-full bg-slate-900/90 backdrop-blur-xl border-t border-slate-800 flex items-center justify-around pb-6 pt-3 px-2 z-50">
+           <button onClick={() => setMobileTab("vitals")} className={`flex flex-col items-center p-2 w-20 transition-colors ${mobileTab === "vitals" ? "text-white" : "text-slate-500 hover:text-slate-400"}`}>
+             <div className={`p-1.5 rounded-xl mb-1 transition-colors ${mobileTab === "vitals" ? "bg-indigo-500/20 text-indigo-400" : ""}`}><Activity size={24} /></div>
+             <span className="text-[10px] font-bold">Vitals</span>
+           </button>
+           <button onClick={() => setMobileTab("charts")} className={`flex flex-col items-center p-2 w-20 transition-colors ${mobileTab === "charts" ? "text-white" : "text-slate-500 hover:text-slate-400"}`}>
+             <div className={`p-1.5 rounded-xl mb-1 transition-colors ${mobileTab === "charts" ? "bg-indigo-500/20 text-indigo-400" : ""}`}><Sparkles size={24} /></div>
+             <span className="text-[10px] font-bold">Trends</span>
+           </button>
+           <button onClick={() => setMobileTab("settings")} className={`flex flex-col items-center p-2 w-20 transition-colors ${mobileTab === "settings" ? "text-white" : "text-slate-500 hover:text-slate-400"}`}>
+             <div className={`p-1.5 rounded-xl mb-1 transition-colors ${mobileTab === "settings" ? "bg-indigo-500/20 text-indigo-400" : ""}`}><User size={24} /></div>
+             <span className="text-[10px] font-bold">Settings</span>
+           </button>
+        </nav>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans text-slate-900 selection:bg-indigo-100">
       {showReportModal && <ReportModal />}
